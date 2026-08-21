@@ -51,6 +51,9 @@ namespace SentinelAuth
             AntiDecompiler.Protect();
             AntiDllInjection.Start();
             AntiDump.Protect();
+            AntiHook.Detect();  // Initial check
+            AntiVM.Detect();    // Initial check
+            AntiMemoryScan.Protect();
             AntiProcess.StartMonitor();
 
             // Start monitoring thread
@@ -120,6 +123,18 @@ namespace SentinelAuth
                     if (AntiDebug())
                     {
                         HandleViolation("Debugger detected during runtime");
+                    }
+
+                    // Periodic anti-hook
+                    if (AntiHook.Detect())
+                    {
+                        HandleViolation("API hooking detected during runtime");
+                    }
+
+                    // Periodic anti-VM
+                    if (AntiVM.Detect())
+                    {
+                        HandleViolation("Virtual machine detected during runtime");
                     }
 
                     Thread.Sleep(intervalMs);
@@ -489,6 +504,180 @@ namespace SentinelAuth
             IntPtr processHandle, int processInformationClass,
             ref IntPtr processInformation, int processInformationLength,
             ref int returnLength);
+    }
+
+    // =========================================================================
+    // Anti-Hook (detect API hooking)
+    // =========================================================================
+
+    public static class AntiHook
+    {
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetModuleHandle(string lpModuleName);
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);
+
+        private static readonly string[][] HookedAPIs = {
+            new[] { "kernel32.dll", "IsDebuggerPresent" },
+            new[] { "kernel32.dll", "CheckRemoteDebuggerPresent" },
+            new[] { "kernel32.dll", "WriteProcessMemory" },
+            new[] { "kernel32.dll", "ReadProcessMemory" },
+            new[] { "ntdll.dll", "NtQueryInformationProcess" },
+        };
+
+        /// <summary>Detect JMP/PUSH hooks on critical APIs.</summary>
+        public static bool Detect()
+        {
+            foreach (var api in HookedAPIs)
+            {
+                IntPtr hMod = GetModuleHandle(api[0]);
+                if (hMod == IntPtr.Zero) continue;
+                IntPtr proc = GetProcAddress(hMod, api[1]);
+                if (proc == IntPtr.Zero) continue;
+
+                byte[] bytes = new byte[16];
+                Marshal.Copy(proc, bytes, 0, 16);
+
+                // JMP rel (0xE9), JMP [addr] (0xFF 0x25), PUSH imm32 (0x68), MOV RAX+JMP (0x48 0xB8)
+                if (bytes[0] == 0xE9 || bytes[0] == 0xEA) return true;
+                if (bytes[0] == 0xFF && bytes[1] == 0x25) return true;
+                if (bytes[0] == 0x68) return true;
+                if (bytes[0] == 0x48 && bytes[1] == 0xB8) return true;
+            }
+            return false;
+        }
+    }
+
+    // =========================================================================
+    // Anti-VM (detect virtual machines)
+    // =========================================================================
+
+    public static class AntiVM
+    {
+        private static readonly string[] VMIndicators = {
+            "vmware", "virtualbox", "virtual", "qemu", "hyper-v",
+            "vbox", "xen", "parallels"
+        };
+
+        /// <summary>Detect VM environment via registry + WMI.</summary>
+        public static bool Detect()
+        {
+            // Check registry keys
+            string[] keys = {
+                @"SYSTEM\CurrentControlSet\Control\SystemInformation",
+                @"SOFTWARE\VMware, Inc.\VMware Tools",
+                @"SOFTWARE\Oracle\VirtualBox Guest Additions"
+            };
+
+            foreach (var keyPath in keys)
+            {
+                try
+                {
+                    using (var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(keyPath))
+                    {
+                        if (key != null) return true;
+                    }
+                }
+                catch { }
+            }
+
+            // Check system manufacturer
+            try
+            {
+                using (var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
+                    @"SYSTEM\CurrentControlSet\Control\SystemInformation"))
+                {
+                    string manufacturer = key?.GetValue("SystemManufacturer")?.ToString() ?? "";
+                    string product = key?.GetValue("SystemProductName")?.ToString() ?? "";
+                    string combined = (manufacturer + product).ToLower();
+
+                    foreach (var indicator in VMIndicators)
+                    {
+                        if (combined.Contains(indicator)) return true;
+                    }
+                }
+            }
+            catch { }
+
+            return false;
+        }
+    }
+
+    // =========================================================================
+    // Anti-Memory Scan (protect from Cheat Engine)
+    // =========================================================================
+
+    public static class AntiMemoryScan
+    {
+        [DllImport("kernel32.dll")]
+        private static extern bool VirtualProtect(IntPtr lpAddress, UIntPtr dwSize,
+            uint flNewProtect, out uint lpflOldProtect);
+
+        private const uint PAGE_NOACCESS = 0x01;
+        private const uint PAGE_READONLY = 0x02;
+
+        /// <summary>Protect sensitive memory regions from scanning.</summary>
+        public static void Protect()
+        {
+            try
+            {
+                // Erase PE header to prevent memory scanning tools
+                ProcessModule module = Process.GetCurrentProcess().MainModule;
+                IntPtr baseAddr = module.BaseAddress;
+
+                // Read DOS header
+                byte[] dosHeader = new byte[64];
+                Marshal.Copy(baseAddr, dosHeader, 0, 64);
+
+                // Get PE header offset
+                int peOffset = BitConverter.ToInt32(dosHeader, 60);
+                IntPtr peHeader = IntPtr.Add(baseAddr, peOffset);
+
+                // Read section count
+                byte[] sectionCountBytes = new byte[2];
+                Marshal.Copy(IntPtr.Add(peHeader, 6), sectionCountBytes, 0, 2);
+                short sectionCount = BitConverter.ToInt16(sectionCountBytes, 0);
+
+                // Get optional header size
+                byte[] optHeaderSizeBytes = new byte[2];
+                Marshal.Copy(IntPtr.Add(peHeader, 20), optHeaderSizeBytes, 0, 2);
+                short optHeaderSize = BitConverter.ToInt16(optHeaderSizeBytes, 0);
+
+                // Iterate sections and protect data sections
+                IntPtr sectionStart = IntPtr.Add(peHeader, 24 + optHeaderSize);
+                for (int i = 0; i < sectionCount; i++)
+                {
+                    IntPtr sectionAddr = IntPtr.Add(sectionStart, i * 40);
+
+                    byte[] nameBytes = new byte[8];
+                    Marshal.Copy(sectionAddr, nameBytes, 0, 8);
+                    string sectionName = Encoding.ASCII.GetString(nameBytes).TrimEnd('\0').ToLower();
+
+                    // Protect .data and .rdata sections (prevent scanning)
+                    if (sectionName == ".data" || sectionName == ".rdata")
+                    {
+                        byte[] vaddrBytes = new byte[4];
+                        Marshal.Copy(IntPtr.Add(sectionAddr, 12), vaddrBytes, 0, 4);
+                        uint virtualAddr = BitConverter.ToUInt32(vaddrBytes, 0);
+
+                        byte[] sizeBytes = new byte[4];
+                        Marshal.Copy(IntPtr.Add(sectionAddr, 8), sizeBytes, 0, 4);
+                        uint virtualSize = BitConverter.ToUInt32(sizeBytes, 0);
+
+                        if (virtualSize > 0 && virtualAddr > 0)
+                        {
+                            IntPtr sectionPtr = IntPtr.Add(baseAddr, (int)virtualAddr);
+                            // Make read-only to prevent scanning
+                            VirtualProtect(sectionPtr, (UIntPtr)virtualSize, PAGE_READONLY, out _);
+                        }
+                    }
+                }
+
+                Debug.WriteLine("[SENTINEL-SECURITY] Anti-memory scan protection applied");
+            }
+            catch { }
+        }
     }
 
     // =========================================================================

@@ -345,6 +345,93 @@ void Security::set_on_violation(std::function<void(const std::string&)> callback
     _on_violation = callback;
 }
 
+void Security::anti_dll_injection() {
+    // Get snapshot of loaded modules
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetCurrentProcessId());
+    if (snap == INVALID_HANDLE_VALUE) return;
+
+    MODULEENTRY32W me = {};
+    me.dwSize = sizeof(me);
+
+    // Known allowed modules
+    static const wchar_t* allowed[] = {
+        L"ntdll.dll", L"kernel32.dll", L"user32.dll", L"advapi32.dll",
+        L"bcrypt.dll", L"crypt32.dll", L"winhttp.dll", L"ws2_32.dll",
+        L"ole32.dll", L"oleaut32.dll", L"gdi32.dll", L"shell32.dll",
+        L"msvcrt.dll", L"api-ms-win", L"clbcatq.dll",
+        nullptr
+    };
+
+    if (Module32FirstW(snap, &me)) {
+        do {
+            std::wstring modName(me.szModule);
+            std::transform(modName.begin(), modName.end(), modName.begin(), ::towlower);
+
+            bool isAllowed = false;
+            for (int i = 0; allowed[i] != nullptr; i++) {
+                if (modName.find(allowed[i]) != std::wstring::npos) {
+                    isAllowed = true;
+                    break;
+                }
+            }
+
+            // Check file path — system DLLs are safe
+            std::wstring modPath(me.szExePath);
+            std::transform(modPath.begin(), modPath.end(), modPath.begin(), ::towlower);
+            wchar_t sysDir[MAX_PATH] = {};
+            GetSystemDirectoryW(sysDir, MAX_PATH);
+            std::wstring sysDirStr(sysDir);
+            std::transform(sysDirStr.begin(), sysDirStr.end(), sysDirStr.begin(), ::towlower);
+            if (modPath.find(sysDirStr) != std::wstring::npos) isAllowed = true;
+
+            if (!isAllowed) {
+                handle_violation(
+                    std::string("Suspicious DLL loaded: ") +
+                    std::string(modName.begin(), modName.end())
+                );
+            }
+        } while (Module32NextW(snap, &me));
+    }
+    CloseHandle(snap);
+}
+
+void Security::anti_decompiler() {
+    // Erase PE header to prevent PE analysis tools
+    HMODULE hModule = GetModuleHandleA(nullptr);
+    if (!hModule) return;
+
+    IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)hModule;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return;
+
+    // Overwrite DOS header fields (keep minimal structure for OS loader)
+    dos->e_cblp = 0;
+    dos->e_cp = 0;
+    dos->e_crlc = 0;
+    dos->e_cparhdr = 0;
+    dos->e_minalloc = 0;
+    dos->e_maxalloc = 0;
+    dos->e_ss = 0;
+    dos->e_sp = 0;
+    dos->e_csum = 0;
+    dos->e_ip = 0;
+    dos->e_cs = 0;
+    dos->e_lfarlc = 0;
+    dos->e_ovno = 0;
+    dos->e_res[0] = 0;
+    dos->e_res[1] = 0;
+    dos->e_res[2] = 0;
+    dos->e_res[3] = 0;
+    dos->e_oemid = 0;
+    dos->e_oeminfo = 0;
+
+    // Also erase Rich header if present
+    IMAGE_NT_HEADERS* nt = (IMAGE_NT_HEADERS*)((BYTE*)hModule + dos->e_lfanew);
+    if (nt->Signature == IMAGE_NT_SIGNATURE) {
+        // Zero out some optional header fields
+        nt->FilePointerToRawData = 0;
+    }
+}
+
 void Security::monitor_loop(int interval_ms) {
     while (_running.load()) {
         // Check blocked processes

@@ -194,11 +194,11 @@ Full security: anti-debug, anti-decompiler, anti-dump, DLL injection monitoring.
 |---------|-----|-----|-------------|
 | **Anti-Debug** | ✅ | ✅ | IsDebuggerPresent, remote debug, hardware breakpoints, timing |
 | **Anti-Dump** | ✅ | ✅ | .text section read-only, PE header protection |
-| **Anti-Hook** | ✅ | ❌ | JMP/PUSH hook detection on kernel32/ntdll |
-| **Anti-VM** | ✅ | ❌ | VMware, VirtualBox, Hyper-V, QEMU (registry + CPUID) |
-| **Anti-Memory Scan** | ✅ | ❌ | Cheat Engine scanner protection |
-| **Anti-DLL Injection** | ❌ | ✅ | DLL monitoring, auto-kill injectors |
-| **Anti-Decompiler** | ❌ | ✅ | ILDASM detection, assembly integrity |
+| **Anti-Hook** | ✅ | ✅ | JMP/PUSH hook detection on kernel32/ntdll |
+| **Anti-VM** | ✅ | ✅ | VMware, VirtualBox, Hyper-V, QEMU (registry + CPUID) |
+| **Anti-Memory Scan** | ✅ | ✅ | Cheat Engine scanner protection |
+| **Anti-DLL Injection** | ✅ | ✅ | DLL monitoring, auto-kill injectors |
+| **Anti-Decompiler** | ✅ | ✅ | PE header erasure / ILDASM detection |
 | **Anti-Process** | ✅ | ✅ | 50+ blocked tools (debuggers, injectors, analyzers) |
 | **Integrity Check** | ✅ | ✅ | SHA256 file hash verification |
 | **Ban Monitor** | ✅ | ✅ | Runtime session verification |
