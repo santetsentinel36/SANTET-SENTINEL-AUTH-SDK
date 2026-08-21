@@ -275,7 +275,6 @@ authssapp.user_data.is_authenticated // bool
 - 🌐 **Website:** [santetsentinel.web.id](https://santetsentinel.web.id)
 - 📖 **Docs:** [santetsentinel.web.id/docs](https://santetsentinel.web.id/docs)
 - 💬 **Discord:** [Join Community](https://discord.gg/9f59WuPJUF)
-- 📦 **Main Repo:** [S4NT3T-S3NT1N3L-V1](https://github.com/santetsentinel36/S4NT3T-S3NT1N3L-V1)
 
 ---
 
